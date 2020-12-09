@@ -3237,6 +3237,21 @@ class TestBook(LayerTest):
                 max_rank=3)
             return (out)
 
+    def test_kmeans(self):
+        with self.static_graph():
+            input = fluid.data(name="input", shape=[None, 3*2], dtype="float32")
+            out = fluid.contrib.layers.kmeans(
+                input=input,
+                param_shape=[3, 2*2],
+                param_attr=fluid.ParamAttr(
+                    learning_rate=1.0,
+                    name="kmeans_param",
+                    initializer=fluid.initializer.Xavier(uniform=False)),
+                channels=2,
+                topk=1,
+                power=1)
+            return (out)
+
     def test_cross_norm_layer_hadamard(self):
         with self.static_graph():
             input = fluid.data(name="input", shape=[None, 2], dtype="float32")
