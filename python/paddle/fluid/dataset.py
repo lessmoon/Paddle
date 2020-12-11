@@ -109,6 +109,23 @@ class DatasetBase(object):
         """
         self.proto_desc.rank_offset = rank_offset
 
+    def set_dup_pv_mask(self, dup_pv_mask):
+        """
+        Set dup_pv_mask for merge_pv. It set the message of Pv.
+
+        Examples:
+            .. code-block:: python
+
+              import paddle.fluid as fluid
+              dataset = fluid.DatasetFactory().create_dataset()
+              dataset.set_dup_pv_mask("dup_pv_mask")
+
+        Args:
+            dup_pv_mask(str): dup_pv_mask's name
+
+        """
+        self.proto_desc.dup_pv_mask = dup_pv_mask
+
     def set_fea_eval(self, record_candidate_size, fea_eval=True):
         """
         set fea eval mode for slots shuffle to debug the importance level of
@@ -361,9 +378,12 @@ class InMemoryDataset(DatasetBase):
         self.parse_ins_id = False
         self.parse_content = False
         self.parse_logkey = False
-        self.merge_by_sid = True
         self.enable_pv_merge = False
         self.merge_by_lineid = False
+        self.merge_by_sid = True
+        self.merge_by_cmatch_sid = False
+        self.enable_dup_pv = False
+        self.enable_update_pv = False
         self.fleet_send_sleep_seconds = None
 
     def set_feed_type(self, data_feed_type):
@@ -386,8 +406,11 @@ class InMemoryDataset(DatasetBase):
         self.dataset.set_parse_ins_id(self.parse_ins_id)
         self.dataset.set_parse_content(self.parse_content)
         self.dataset.set_parse_logkey(self.parse_logkey)
-        self.dataset.set_merge_by_sid(self.merge_by_sid)
         self.dataset.set_enable_pv_merge(self.enable_pv_merge)
+        self.dataset.set_merge_by_sid(self.merge_by_sid)
+        self.dataset.set_merge_by_cmatch_sid(self.merge_by_cmatch_sid)
+        self.dataset.set_enable_dup_pv(self.enable_dup_pv)
+        self.dataset.set_enable_update_pv(self.enable_update_pv)
         self.dataset.set_data_feed_desc(self.desc())
         self.dataset.create_channel()
         self.dataset.create_readers()
@@ -488,6 +511,24 @@ class InMemoryDataset(DatasetBase):
         """
         self.merge_by_sid = merge_by_sid
 
+
+    def set_merge_by_cmatch_sid(self, merge_by_cmatch_sid):
+        """
+        Set if Dataset need to merge sid. If not, one ins means one Pv.
+
+        Args:
+            merge_by_cmatch_sid(bool): if merge sid or not
+
+        Examples:
+            .. code-block:: python
+
+              import paddle.fluid as fluid
+              dataset = fluid.DatasetFactory().create_dataset("InMemoryDataset")
+              dataset.set_merge_by_cmatch_sid(True)
+
+        """
+        self.merge_by_cmatch_sid = merge_by_cmatch_sid
+
     def set_enable_pv_merge(self, enable_pv_merge):
         """
         Set if Dataset need to merge pv.
@@ -504,6 +545,41 @@ class InMemoryDataset(DatasetBase):
 
         """
         self.enable_pv_merge = enable_pv_merge
+
+    def set_enable_dup_pv(self, enable_dup_pv):
+        """
+        Set if Dataset need to dup pv.
+
+        Args:
+            enable_dup_pv(bool): if enable_dup_pv or not
+
+        Examples:
+            .. code-block:: python
+
+              import paddle.fluid as fluid
+              dataset = fluid.DatasetFactory().create_dataset("InMemoryDataset")
+              dataset.set_enable_dup_pv(True)
+
+        """
+        self.enable_dup_pv = enable_dup_pv
+
+
+    def set_enable_update_pv(self, enable_update_pv):
+        """
+        Set if Dataset need to dup pv.
+
+        Args:
+            enable_update_pv(bool): if enable_update_pv or not
+
+        Examples:
+            .. code-block:: python
+
+              import paddle.fluid as fluid
+              dataset = fluid.DatasetFactory().create_dataset("InMemoryDataset")
+              dataset.set_enable_update_pv(True)
+
+        """
+        self.enable_update_pv = enable_update_pv
 
     def preprocess_instance(self):
         """
@@ -1149,9 +1225,12 @@ class PadBoxSlotDataset(BoxPSDataset):
         self.parse_ins_id = False
         self.parse_content = False
         self.parse_logkey = False
-        self.merge_by_sid = True
         self.enable_pv_merge = False
         self.merge_by_lineid = False
+        self.merge_by_sid = True
+        self.merge_by_cmatch_sid = False
+        self.enable_dup_pv = False
+        self.enable_update_pv = False
         self.fleet_send_sleep_seconds = None
 
     def load_into_memory(self):

@@ -52,7 +52,10 @@ DatasetImpl<T>::DatasetImpl() {
   fleet_send_sleep_seconds_ = 0;
   merge_by_insid_ = false;
   merge_by_sid_ = true;
+  merge_by_cmatch_sid_ = false;
   enable_pv_merge_ = false;
+  enable_dup_pv_ = false;
+  enable_update_pv_ = false;
   merge_size_ = 2;
   parse_ins_id_ = false;
   parse_content_ = false;
@@ -149,13 +152,31 @@ void DatasetImpl<T>::SetMergeByInsId(int merge_size) {
 template <typename T>
 void DatasetImpl<T>::SetMergeBySid(bool is_merge) {
   merge_by_sid_ = is_merge;
+  if (merge_by_sid_ && merge_by_cmatch_sid_) {
+    merge_by_cmatch_sid_ = false;
+  }
+}
+
+template <typename T>
+void DatasetImpl<T>::SetMergeByCmatchSid(bool is_merge) {
+  merge_by_cmatch_sid_ = is_merge;
+  if (merge_by_sid_ && merge_by_cmatch_sid_) {
+    merge_by_sid_ = false;
+  }
 }
 
 template <typename T>
 void DatasetImpl<T>::SetEnablePvMerge(bool enable_pv_merge) {
   enable_pv_merge_ = enable_pv_merge;
 }
-
+template <typename T>
+void DatasetImpl<T>::SetEnableDupPv(bool enable_dup_pv) {
+  enable_dup_pv_ = enable_dup_pv;
+}
+template <typename T>
+void DatasetImpl<T>::SetEnableUpdatePv(bool enable_update_pv) {
+  enable_update_pv_ = enable_update_pv;
+}
 template <typename T>
 void DatasetImpl<T>::SetGenerateUniqueFeasign(bool gen_uni_feasigns) {
   gen_uni_feasigns_ = gen_uni_feasigns;
@@ -658,6 +679,9 @@ void DatasetImpl<T>::CreateReaders() {
     readers_[i]->SetParseContent(parse_content_);
     readers_[i]->SetParseLogKey(parse_logkey_);
     readers_[i]->SetEnablePvMerge(enable_pv_merge_);
+    readers_[i]->SetEnableDupPv(enable_dup_pv_);
+    readers_[i]->SetEnableUpdatePv(enable_update_pv_);
+ 
     // Notice: it is only valid for untest of test_paddlebox_datafeed.
     // In fact, it does not affect the train process when paddle is
     // complied with Box_Ps.
@@ -734,6 +758,8 @@ void DatasetImpl<T>::CreatePreLoadReaders() {
     preload_readers_[i]->SetParseContent(parse_content_);
     preload_readers_[i]->SetParseLogKey(parse_logkey_);
     preload_readers_[i]->SetEnablePvMerge(enable_pv_merge_);
+    preload_readers_[i]->SetEnableDupPv(enable_dup_pv_);
+    preload_readers_[i]->SetEnableUpdatePv(enable_update_pv_);
     preload_readers_[i]->SetInputChannel(input_channel_.get());
     preload_readers_[i]->SetOutputChannel(nullptr);
     preload_readers_[i]->SetConsumeChannel(nullptr);
@@ -890,10 +916,21 @@ void MultiSlotDataset::PreprocessInstance() {
     return;
   }
 
-  std::sort(all_records.data(), all_records.data() + all_records_num,
-            [](const Record* lhs, const Record* rhs) {
-              return lhs->search_id < rhs->search_id;
-            });
+  if (merge_by_cmatch_sid_) {
+    std::sort(all_records.data(), all_records.data() + all_records_num,
+                [](const Record* lhs, const Record* rhs) {
+                  if (lhs->search_id == rhs->search_id) {
+                    return lhs->cmatch < rhs->cmatch;
+                  } else {
+                    return lhs->search_id < rhs->search_id;
+                  }
+                });
+  } else {
+    std::sort(all_records.data(), all_records.data() + all_records_num,
+                [](const Record* lhs, const Record* rhs) {
+                  return lhs->search_id < rhs->search_id;
+                });
+  }
 
   std::vector<PvInstance> pv_data;
   if (merge_by_sid_) {
@@ -909,13 +946,43 @@ void MultiSlotDataset::PreprocessInstance() {
       }
       pv_data.back()->merge_instance(ins);
     }
-  } else {
+  } else if (merge_by_cmatch_sid_) {
+    uint64_t last_search_id = 0;
+    uint32_t last_cmatch = 0;
+    for (int i = 0; i < all_records_num; ++i) {
+      Record* ins = all_records[i];
+      if (i == 0 || last_search_id != ins->search_id || last_cmatch != ins->cmatch) {
+        PvInstance pv_instance = make_pv_instance();
+        pv_instance->merge_instance(ins);
+        pv_data.push_back(pv_instance);
+        last_search_id = ins->search_id;
+        last_cmatch = ins->cmatch;
+        continue;
+      }
+      pv_data.back()->merge_instance(ins);
+    }
+  }else {
     for (int i = 0; i < all_records_num; ++i) {
       Record* ins = all_records[i];
       PvInstance pv_instance = make_pv_instance();
       pv_instance->merge_instance(ins);
       pv_data.push_back(pv_instance);
     }
+  }
+
+  if (enable_dup_pv_) {
+    size_t size = pv_data.size();
+    for (size_t i = 0; i < size; i++) {
+      PvInstance pv_ins = pv_data[i];
+      pv_ins->ad_idx = 0;
+      for (size_t j = 1; j < pv_ins->ads.size(); j++) {
+        PvInstance dup_pv_instance = make_pv_instance();
+        dup_pv_instance->ads = pv_ins->ads;
+        dup_pv_instance->ad_idx = j;
+        pv_data.emplace_back(dup_pv_instance);
+      }
+    }
+    VLOG(3) << "Add dup pv num: " << pv_data.size() - size;
   }
 
   auto fleet_ptr = FleetWrapper::GetInstance();
@@ -1642,6 +1709,9 @@ class ShuffleResultWaitGroup : public boxps::ResultCallback {
   std::condition_variable cond_;
   int counter_ = 0;
 };
+inline uint64_t cantor_pair(uint64_t a, uint64_t b) {
+    return (a + b) * (a + b + 1) / 2 + b;
+}
 // shuffle data
 void PadBoxSlotDataset::ShuffleData(std::vector<std::thread>* shuffle_threads,
                                     int thread_num) {
@@ -1663,10 +1733,13 @@ void PadBoxSlotDataset::ShuffleData(std::vector<std::thread>* shuffle_threads,
         for (auto& t : data) {
           int client_id = 0;
           if (enable_pv_merge_) {  // shuffle by pv
-            client_id = t->search_id % mpi_size_;
+            if (merge_by_cmatch_sid_) {
+              client_id = cantor_pair(static_cast<uint64_t>(t->cmatch), t->search_id) % mpi_size_;
+            } else {
+              client_id = t->search_id % mpi_size_;
+            }
           } else if (merge_by_insid_) {  // shuffle by lineid
-            client_id =
-                XXH64(t->ins_id_.data(), t->ins_id_.length(), 0) % mpi_size_;
+            client_id = XXH64(t->ins_id_.data(), t->ins_id_.length(), 0) % mpi_size_;
           } else {  // shuffle
             client_id = BoxWrapper::LocalRandomEngine()() % mpi_size_;
           }
@@ -1809,6 +1882,8 @@ void PadBoxSlotDataset::CreateReaders() {
     readers_[i]->SetParseContent(parse_content_);
     readers_[i]->SetParseLogKey(parse_logkey_);
     readers_[i]->SetEnablePvMerge(enable_pv_merge_);
+    readers_[i]->SetEnableDupPv(enable_dup_pv_);
+    readers_[i]->SetEnableUpdatePv(enable_update_pv_);
     // Notice: it is only valid for untest of test_paddlebox_datafeed.
     // In fact, it does not affect the train process when paddle is
     // complied with Box_Ps.
@@ -1835,10 +1910,23 @@ void PadBoxSlotDataset::PreprocessInstance() {
   }
 
   size_t all_records_num = input_records_.size();
-  std::sort(input_records_.data(), input_records_.data() + all_records_num,
+
+  if (merge_by_cmatch_sid_) {
+    std::sort(input_records_.data(), input_records_.data() + all_records_num,
+              [](const SlotRecord& lhs, const SlotRecord& rhs) {
+                    if (lhs->search_id == rhs->search_id) {
+                      return lhs->cmatch < rhs->cmatch;
+                    } else {
+                      return lhs->search_id < rhs->search_id;
+                    }
+              });
+  } else {
+    std::sort(input_records_.data(), input_records_.data() + all_records_num,
             [](const SlotRecord& lhs, const SlotRecord& rhs) {
               return lhs->search_id < rhs->search_id;
             });
+  }
+
   if (merge_by_sid_) {
     uint64_t last_search_id = 0;
     for (size_t i = 0; i < all_records_num; ++i) {
@@ -1852,6 +1940,21 @@ void PadBoxSlotDataset::PreprocessInstance() {
       }
       input_pv_ins_.back()->merge_instance(ins);
     }
+  } else if (merge_by_cmatch_sid_) {
+    uint64_t last_search_id = 0;
+    uint32_t last_cmatch = 0;
+    for (size_t i = 0; i < all_records_num; ++i) {
+      auto& ins = input_records_[i];
+      if (i == 0 || last_search_id != ins->search_id || last_cmatch != ins->cmatch) {
+        SlotPvInstance pv_instance = make_slotpv_instance();
+        pv_instance->merge_instance(ins);
+        input_pv_ins_.emplace_back(pv_instance);
+        last_search_id = ins->search_id;
+        last_cmatch = ins->cmatch;
+        continue;
+      }
+      input_pv_ins_.back()->merge_instance(ins);
+    }
   } else {
     for (size_t i = 0; i < all_records_num; ++i) {
       auto& ins = input_records_[i];
@@ -1859,6 +1962,21 @@ void PadBoxSlotDataset::PreprocessInstance() {
       pv_instance->merge_instance(ins);
       input_pv_ins_.push_back(pv_instance);
     }
+  }
+
+  if (enable_dup_pv_) {
+    size_t size = input_pv_ins_.size();
+    for (size_t i = 0; i < size; i++) {
+      SlotPvInstance pv_ins = input_pv_ins_[i];
+      pv_ins->ad_idx = 0;
+      for (size_t j = 1; j < pv_ins->ads.size(); j++) {
+        SlotPvInstance dup_pv_ins = make_slotpv_instance();
+        dup_pv_ins->ads = pv_ins->ads;
+        dup_pv_ins->ad_idx = j;
+        input_pv_ins_.emplace_back(dup_pv_ins);
+      }
+    }
+    LOG(INFO) << "pv_num=[" << size << "] -> dup_pv_num=[" << input_pv_ins_.size() << "]";
   }
 }
 // restore
@@ -2011,7 +2129,8 @@ void PadBoxSlotDataset::PrepareTrain(void) {
 
   std::vector<std::pair<int, int>> offset;
   // join or aucrunner mode enable pv
-  if (enable_pv_merge_ && (box_ptr->Phase() == 1 || box_ptr->Mode() == 1)) {
+  if (enable_pv_merge_ && (box_ptr->Phase() == 1 || box_ptr->Mode() == 1
+              || (box_ptr->Phase() == 0 && enable_update_pv_))) {
     std::shuffle(input_pv_ins_.begin(), input_pv_ins_.end(),
                  BoxWrapper::LocalRandomEngine());
     // 分数据到各线程里面
